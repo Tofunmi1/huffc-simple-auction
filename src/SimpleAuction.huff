@@ -1,6 +1,7 @@
 /* Imports */
 #include "./utils/Utils.huff"
 #include "./utils/HashMap.huff"
+#include "./utils/Ownable.huff"
 
 #define constant BENEFICIARY_LOCATION = FREE_STORAGE_POINTER()
 #define constant AUCTION_END_TIME_LOCATION = FREE_STORAGE_POINTER()
@@ -20,6 +21,9 @@
 
 //CONSTRUCTOR takes in two args , appended at the end of the compiled bytecode
 #define macro CONSTRUCTOR() = takes(0) returns (0) {
+    ///set ENDED to false
+    0x00
+    [ENDED] sstore
     ///beneficiary = beneficiaryAddress;
     0x20 0x40 codesize sub 0x00   
     codecopy 0x00 mload           
@@ -29,6 +33,25 @@
 
     0x20 0x20 codesize sub 0x00   
     codecopy 0x00 mload
+    timestamp 
+    add           
+    [AUCTION_END_TIME_LOCATION] sstore
+}
+
+//since the main function of the Constructor is to set state variables
+#define macro ALTERNATIVE_CONSTRUCTOR() = takes(0) returns (0) {
+    ///set ENDED to false
+    ///ONLY_OWNER
+    // ONLY_OWNER()
+    0x00
+    [ENDED] sstore
+    ///beneficiary = beneficiaryAddress;
+    calldataload 0x04
+    [BENEFICIARY_LOCATION] sstore        
+
+    ///auctionEndTime = block.timestamp + biddingTime;
+
+    calldataload 0x24
     timestamp 
     add           
     [AUCTION_END_TIME_LOCATION] sstore
@@ -93,51 +116,126 @@
     //emit the HIHEST_BID_INCREASED_EVENT_SIG
     caller callvalue 
     [HIHEST_BID_INCREASED_EVENT_SIG]
-    0x00 0x00
-    log2
+    0x20 0x00
+    log3
 }
 
 #define macro WITHDRAW() = takes(0) returns(1) {
   
   //if (amount > 0)
   caller
-  [PENDING_RETURNS_LOCATION] LOAD_ELEMENT_FROM_KEYS(0X00)
-  0x00 
+  [PENDING_RETURNS_LOCATION] LOAD_ELEMENT_FROM_KEYS(0x00)
+  0x00
   lt
   return_true_location
-  jumpi //jump-destination is return_true_location
+  jumpi
   caller
   0x00
   [PENDING_RETURNS_LOCATION] STORE_ELEMENT_FROM_KEYS(0x00)
   
-  //storing .send() params in memory
-  0xb46300ec 0x00 mstore
-  caller 0x04 mstore //0x04 + 0x20 = 36 bytes
+  //prepare memory for send()
+  0xa52c101e 0x00 mstore
+  caller 
+  [PENDING_RETURNS_LOCATION] LOAD_ELEMENT_FROM_KEYS(0X00)
+  0x04 mstore //0x04 + 0x20 = 36 bytes
 
   ///@dev equivalent in solidity
   ///@dev if (!payable(msg.sender).send(amount)) {}
 
-  0X20 //32 bytes output
-  0X00 //storage output offset
-  0x24  //calldata is 36 bytes long 
+  0x20 //32 bytes output  
+  0x00  //storage output offset
+  0x24 //calldata is 36 bytes long
   0x00
-  0X00 //set callvalue to zero
-  caller //msg.sender
+  0x00 //callvalue is zero
+  caller // msg.sender
   gas
   call
  iszero
-  
-  caller  
-  [PENDING_RETURNS_LOCATION] STORE_ELEMENT_FROM_KEYS(0x00)
-
-  //jumpdest 
-  return_true_location:
-    0x01 0x00 mstore
-    0x20 0x00 return 
+ return_false_location jumpi return_true_location: 0x01 0x00 mstore
+    0x20 0x00 return
+  //jumpdest for false
+  return_false_location:
+    0x00 0x00 mstore
+    0x20 0x00 return
 }
 
 #define macro AUTION_END() = takes(0) returns(0) {
+ [AUCTION_END_TIME_LOCATION] sload
+ timestamp
+ lt
+ error jumpi
 
+ 0x01
+ [ENDED] sload
+ eq
+ error jumpi
+
+ 0x01
+ [ENDED] sstore
+
+ [HIGHEST_BIDER_LOCATION] sload [HIGHEST_BID] sload 
+ [HIHEST_BID_INCREASED_EVENT_SIG]
+ 0x20 0x00
+ log3
+  
+  0x12514bba 0x00 mstore
+  [HIGHEST_BID] sload
+  0x04 mstore //0x04 + 0x20 = 36 bytes
+
+  ///@dev equivalent in solidity
+  ///@dev if (!payable(msg.sender).send(amount)) {}
+
+  0x20 //32 bytes output  
+  0x00  //storage output offset
+  0x24 //calldata is 36 bytes long
+  0x00
+  0x00 //callvalue is zero
+  caller // msg.sender
+  gas
+  call
+
+ error:
+  0x00 0x00 revert
+}
+
+#define macro RETURN_BENEFICIARY() = takes(0) returns(1) {
+  [BENEFICIARY_LOCATION] sload 0x00 mstore
+  0x20 0x00 return
+}
+
+#define macro RETURN_HIGHEST_BID() = takes(0) returns(1) {
+  [HIGHEST_BID] sload 0x00 mstore
+  0x20 0x00 return
+}
+
+#define macro RETURN_HIGHEST_BIDDER() = takes(0) returns(1) {
+  [HIGHEST_BIDER_LOCATION] sload 0x00 mstore
+  0x20 0x00 return
+}
+
+#define macro RETURN_AUCTION_END_TIME() = takes(0) returns(1) {
+  [AUCTION_END_TIME_LOCATION] sload 0x00 mstore
+  0x20 0x00 return
+}
+
+
+#define macro AUCTION_ENDED() = takes(0) returns(1) {
+  [ENDED] sload
+  0x01
+  eq  return_true jumpi 
+
+  [ENDED] sload
+  0x00
+  eq  return_false jumpi 
+
+  //jumpdest for true 
+  return_true:
+    0x01 0x00 mstore
+    0x20 0x00 return
+//jumpdest for false
+  return_false:
+    0x00 0x00 mstore
+    0x20 0x00 return
 }
 
 #define macro MAIN() = takes(0) returns (0) {
@@ -145,11 +243,41 @@
   dup1 0x1998aeef eq bid jumpi
   dup1 0x3ccfd60b eq withdraw jumpi
   dup1 0x2664e13d eq auctionEnd jumpi
+  dup1 0x39325847 eq alternativeConstructor jumpi
+  dup1 0xcdcbc59a eq returnBeneficary jumpi
+  dup1 0x090dd2f6 eq returnHighestBid jumpi
+  dup1 0xd442aa62 eq returnHighestBidder jumpi
+  dup1 0x4b867465 eq returnAuctionEndTime jumpi
+  dup1 0x12fa6feb eq ended jumpi
 
+  
+  alternativeConstructor:
+    ALTERNATIVE_CONSTRUCTOR()
+  
   bid:
     BID()
+  
   withdraw:
     WITHDRAW()
+  
   auctionEnd:
     AUTION_END()
-} 
+
+  returnBeneficary:
+    RETURN_BENEFICIARY() 
+
+
+  returnHighestBid:
+    RETURN_HIGHEST_BID()
+
+ returnHighestBidder:
+    RETURN_HIGHEST_BIDDER()
+
+
+  returnAuctionEndTime:  
+    RETURN_AUCTION_END_TIME()
+
+  
+  ended:
+    AUCTION_ENDED()
+}
